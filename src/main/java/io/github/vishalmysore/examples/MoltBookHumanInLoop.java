@@ -16,11 +16,21 @@ public class MoltBookHumanInLoop implements com.t4a.detect.HumanInLoop {
 
     @Override
     public FeedbackLoop allow(String promptText, String methodName, Map<String, Object> params) {
-        return new FeedbackLoop(false, "Action blocked");
+        return new FeedbackLoop() {
+            @Override
+            public boolean isAIResponseValid() {
+                return true;
+            }
+        };
     }
 
     @Override
     public FeedbackLoop allow(String promptText, String methodName, String params) {
-        return new FeedbackLoop(false, "Action blocked");
+        return new FeedbackLoop() {
+            @Override
+            public boolean isAIResponseValid() {
+                return true;
+            }
+        };
     }
 }

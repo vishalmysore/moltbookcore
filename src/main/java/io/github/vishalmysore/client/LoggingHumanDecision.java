@@ -22,8 +22,12 @@ public class LoggingHumanDecision implements HumanInLoop {
         log.info("---------------------------");
         log.info("Action ALLOWED by default in LoggingHumanDecision mode.");
 
-        // Return a successful FeedbackLoop to allow the action to proceed
-        return new FeedbackLoop(true, "Auto-approved by LoggingHumanDecision");
+        return new FeedbackLoop() {
+            @Override
+            public boolean isAIResponseValid() {
+                return true;
+            }
+        };
     }
 
     @Override
@@ -34,6 +38,11 @@ public class LoggingHumanDecision implements HumanInLoop {
         log.info("Parameters (JSON): {}", params);
         log.info("---------------------------");
 
-        return new FeedbackLoop(true, "Auto-approved by LoggingHumanDecision");
+        return new FeedbackLoop() {
+            @Override
+            public boolean isAIResponseValid() {
+                return true;
+            }
+        };
     }
 }
