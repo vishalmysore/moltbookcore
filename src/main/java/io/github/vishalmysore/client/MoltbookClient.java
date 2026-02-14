@@ -5,8 +5,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriUtils;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 
 import java.nio.charset.StandardCharsets;
 
@@ -20,7 +23,9 @@ public class MoltbookClient {
     private static final String BASE_URL = "https://www.moltbook.com/api/v1";
     private final ActivityTrackingService activityService;
     private final RestTemplate restTemplate;
+    private final Gson gson;
     private String apiKey;
+    private ChallengeSolver challengeSolver;
 
     public MoltbookClient(
             @Value("${moltbook.api.key:}") String configuredApiKey,
@@ -28,6 +33,7 @@ public class MoltbookClient {
 
         this.restTemplate = new RestTemplate();
         this.activityService = activityService;
+        this.gson = new Gson();
 
         // Try multiple sources for API key (in priority order)
         // 1. JVM system property (-DMOLTBOOK_API_KEY=...)
@@ -245,36 +251,115 @@ public class MoltbookClient {
     }
 
     private String post(String path, Object body) {
-        HttpHeaders headers = authHeaders();
-        HttpEntity<?> entity = new HttpEntity<>(body, headers);
-
-        try {
+        return executeWithVerification(() -> {
+            HttpHeaders headers = authHeaders();
+            HttpEntity<?> entity = new HttpEntity<>(body, headers);
             ResponseEntity<String> response = restTemplate.postForEntity(
                     BASE_URL + path,
                     entity,
                     String.class);
             return response.getBody();
-        } catch (Exception e) {
-            log.error("POST request failed: {}", path, e);
-            throw new RuntimeException("Moltbook API request failed: " + e.getMessage(), e);
-        }
+        }, "POST " + path);
     }
 
     private String patch(String path, Object body) {
-        HttpHeaders headers = authHeaders();
-        HttpEntity<?> entity = new HttpEntity<>(body, headers);
-
-        try {
+        return executeWithVerification(() -> {
+            HttpHeaders headers = authHeaders();
+            HttpEntity<?> entity = new HttpEntity<>(body, headers);
             ResponseEntity<String> response = restTemplate.exchange(
                     BASE_URL + path,
                     HttpMethod.PATCH,
                     entity,
                     String.class);
             return response.getBody();
+        }, "PATCH " + path);
+    }
+
+    private String executeWithVerification(java.util.function.Supplier<String> action, String description) {
+        try {
+            String response = action.get();
+            if (isVerificationRequired(response)) {
+                log.info("🔐 {} response requires verification", description);
+                if (handleVerification(response)) {
+                    log.info("✅ Verified successfully for {}", description);
+                    return response;
+                }
+            }
+            return response;
         } catch (Exception e) {
-            log.error("PATCH request failed: {}", path, e);
-            throw new RuntimeException("Moltbook API request failed: " + e.getMessage(), e);
+            String errorBody = extractErrorBody(e);
+            if (isVerificationRequired(errorBody)) {
+                log.info("🔐 {} failed with verification challenge", description);
+                if (handleVerification(errorBody)) {
+                    log.info("🔄 Retrying {} after verification...", description);
+                    return action.get();
+                }
+            }
+            if (e instanceof RuntimeException)
+                throw (RuntimeException) e;
+            throw new RuntimeException("Moltbook API error: " + e.getMessage(), e);
         }
+    }
+
+    private boolean isVerificationRequired(String body) {
+        if (body == null || body.isEmpty())
+            return false;
+        try {
+            JsonObject obj = gson.fromJson(body, JsonObject.class);
+            return (obj.has("verification_required") && obj.get("verification_required").getAsBoolean())
+                    || obj.has("verification");
+        } catch (Exception e) {
+            return body.contains("verification_required");
+        }
+    }
+
+    private boolean handleVerification(String jsonResponse) {
+        if (challengeSolver == null) {
+            log.warn("No ChallengeSolver configured in MoltbookClient - cannot solve verification challenge");
+            return false;
+        }
+
+        try {
+            JsonObject response = gson.fromJson(jsonResponse, JsonObject.class);
+            JsonObject verification = response.has("verification") ? response.getAsJsonObject("verification") : null;
+
+            if (verification == null)
+                return false;
+
+            String code = verification.get("code").getAsString();
+            String challenge = verification.get("challenge").getAsString();
+
+            String answer = challengeSolver.solve(challenge);
+            String verifyResponse = verifyPost(code, answer);
+
+            JsonObject verifyObj = gson.fromJson(verifyResponse, JsonObject.class);
+            boolean success = verifyObj.has("success") && verifyObj.get("success").getAsBoolean();
+
+            activityService.trackAction(
+                    success ? "INLINE_VERIFY_SUCCESS" : "INLINE_VERIFY_FAILED",
+                    "Challenge: " + challenge + "\nAnswer: " + answer,
+                    verifyResponse,
+                    success);
+
+            return success;
+        } catch (Exception e) {
+            log.error("Verification handling failed", e);
+            return false;
+        }
+    }
+
+    private String extractErrorBody(Exception e) {
+        if (e instanceof HttpClientErrorException) {
+            return ((HttpClientErrorException) e).getResponseBodyAsString();
+        }
+        if (e.getCause() instanceof HttpClientErrorException) {
+            return ((HttpClientErrorException) e.getCause()).getResponseBodyAsString();
+        }
+        return null;
+    }
+
+    public void setChallengeSolver(ChallengeSolver challengeSolver) {
+        this.challengeSolver = challengeSolver;
     }
 
     private void delete(String path) {

@@ -19,6 +19,10 @@ import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.client.HttpClientErrorException;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 
 /**
  * Moltbook heartbeat - Pull-based architecture
@@ -51,6 +55,7 @@ public class MoltbookHeartbeat {
     private final String capabilityPrompt;
     private HumanInLoop humanInLoop;
     String mySkills;
+
     public MoltbookHeartbeat(MoltbookClient moltbookClient,
             FeedAnalyzer feedAnalyzer,
             ActivityTrackingService activityTrackingService, HumanInLoop humanInLoop) {
@@ -61,7 +66,10 @@ public class MoltbookHeartbeat {
         this.humanInLoop = humanInLoop;
         this.promptTransformer = PredictionLoader.getInstance().createOrGetPromptTransformer();
 
-         mySkills = feedAnalyzer.getSkills();
+        // Configure MoltbookClient with this heartbeat as the challenge solver
+        this.moltbookClient.setChallengeSolver(this::solveVerificationChallenge);
+
+        mySkills = feedAnalyzer.getSkills();
 
         // Use Tools4AI to create an engaging post with jokes
         capabilityPrompt = "These are my skills -" + mySkills
@@ -94,7 +102,14 @@ public class MoltbookHeartbeat {
             String statusResponse = moltbookClient.getAgentStatus();
             log.info("Agent status: {}", statusResponse);
 
-            if (statusResponse == null || !statusResponse.contains("\"status\":\"claimed\"")) {
+            if (statusResponse == null) {
+                lastCheck = Instant.now();
+                return;
+            }
+
+            com.google.gson.JsonObject statusObj = new com.google.gson.Gson().fromJson(statusResponse,
+                    com.google.gson.JsonObject.class);
+            if (!statusObj.has("status") || !"claimed".equals(statusObj.get("status").getAsString())) {
                 log.warn("⏳ Agent not claimed yet - waiting for human verification");
                 lastCheck = Instant.now();
                 return;
@@ -173,20 +188,19 @@ public class MoltbookHeartbeat {
                             "Found a relevant post from @%s:\n\"%s\"\n\n" +
                             "Task: Can you execute an action to engage with this post based on your skills? " +
                             "Answer YES or NO and if YES, specify the action name " +
-                            "if you cannot find any action mapped then just answer NO."+mySkills,
+                            "if you cannot find any action mapped then just answer NO." + mySkills,
                     author, text, item.getId());
-            YesOrNoDecision yesOrNoDecision= (YesOrNoDecision) promptTransformer.transformIntoPojo(promptAskIfActionCanBeExecuted,YesOrNoDecision.class);
+            YesOrNoDecision yesOrNoDecision = (YesOrNoDecision) promptTransformer
+                    .transformIntoPojo(promptAskIfActionCanBeExecuted, YesOrNoDecision.class);
             // Wrap with script processor for action execution
             try {
                 log.info("🤖 AI is deciding action for post: {}", item.getId());
-                if(yesOrNoDecision.isYes()) {
+                if (yesOrNoDecision.isYes()) {
                     result = processor.processSingleAction(prompt, humanInLoop);
+                } else {
+                    log.info("👀 AI decided not to take action on post: {}", item.getId());
+                    result = processor.query(prompt);
                 }
-                    else{
-                        log.info("👀 AI decided not to take action on post: {}", item.getId());
-                        result = processor.query(prompt);
-                }
-
 
                 if (result != null) {
                     log.info("✅ Action executed: {}", result);
@@ -237,7 +251,8 @@ public class MoltbookHeartbeat {
             log.info("💡 No interesting discussions found - asking AI to post about our capabilities...");
 
             try {
-                // this will query for text , will not call any action as there is no action mentioned in the prompt and we are not using processSingleAction here
+                // this will query for text , will not call any action as there is no action
+                // mentioned in the prompt and we are not using processSingleAction here
                 Object result = processor.query(capabilityPrompt);
 
                 if (result != null) {
@@ -444,97 +459,9 @@ public class MoltbookHeartbeat {
     }
 
     /**
-     * Executes an API action with robust verification handling.
-     * Handles both success-path verification (200 OK + "verification_required")
-     * and error-path verification (403 Forbidden + "verification_required").
-     * 
-     * @param action      The API callback to execute
-     * @param description Human-readable description for logging
-     * @return The response string
-     */
-    private String executeWithVerification(java.util.function.Supplier<String> action, String description) {
-        try {
-            String response = action.get();
-            // Success path verification check
-            if (response != null && response.contains("verification_required")) {
-                log.info("🔐 {} response requires verification", description);
-                if (handleVerificationResponse(response)) {
-                    log.info("✅ Verified successfully for {}", description);
-                    // Usually for 200 OK, the item is created as PENDING, so we don't retry.
-                    return response;
-                }
-            }
-            return response;
-        } catch (RuntimeException e) {
-            // Error path verification check
-            String errorBody = extractErrorBody(e);
-            if (errorBody != null && errorBody.contains("verification_required")) {
-                log.info("🔐 {} failed with verification challenge", description);
-                if (handleVerificationResponse(errorBody)) {
-                    log.info("🔄 Retrying {} after verification...", description);
-                    // Retry ONCE
-                    return action.get();
-                }
-            }
-            throw e;
-        }
-    }
-
-    /**
-     * Standardized verification response handler
-     * Parses JSON, extracts challenge, solves it, and submits code.
-     */
-    private boolean handleVerificationResponse(String jsonResponse) {
-        try {
-            com.google.gson.JsonObject response = new com.google.gson.Gson().fromJson(jsonResponse,
-                    com.google.gson.JsonObject.class);
-
-            com.google.gson.JsonObject verification = null;
-            if (response.has("verification")) {
-                verification = response.getAsJsonObject("verification");
-            } else if (response.has("error") && response.has("hint")) { // Handle some error formats
-                // Try to look deeper or maybe the error itself IS the challenge if
-                // unstructured?
-                // But Moltbook standard is "verification" object.
-                // Fallback if structure is flat?
-            }
-
-            if (verification == null) {
-                return false;
-            }
-
-            String verificationCode = verification.get("code").getAsString();
-            String challenge = verification.get("challenge").getAsString();
-
-            log.info("🧩 Handling verification challenge: {}", challenge);
-
-            String answer = solveVerificationChallenge(challenge);
-            log.info("💡 Computed answer: {}", answer);
-
-            String verifyResponse = moltbookClient.verifyPost(verificationCode, answer);
-            log.info("✅ Verification submission: {}", verifyResponse);
-
-            boolean success = verifyResponse != null
-                    && (verifyResponse.contains("\"success\":true") || verifyResponse.contains("verified"));
-
-            activityTrackingService.trackAction(
-                    success ? "INLINE_VERIFY_SUCCESS" : "INLINE_VERIFY_FAILED",
-                    "Challenge: " + challenge + "\nAnswer: " + answer,
-                    verifyResponse,
-                    success);
-
-            return success;
-
-        } catch (Exception e) {
-            log.error("❌ Error handling verification response", e);
-            return false;
-        }
-    }
-
-    /**
      * Robust math solver for verification challenges
      */
-    private String solveVerificationChallenge(String challenge) throws Exception {
+    public String solveVerificationChallenge(String challenge) throws Exception {
         // Use AI to solve the challenge with improved prompt
         String solvePrompt = String.format(
                 "You are solving a mathematical verification challenge. The challenge text may contain obfuscation like random characters, case changes, or extra symbols.\\n"
@@ -550,38 +477,25 @@ public class MoltbookHeartbeat {
                 challenge);
 
         String answer = processor.query(solvePrompt).trim();
+        log.info("🤖 AI generated raw answer: {}", answer);
 
-        // More robust answer cleaning
-        answer = answer.replaceAll("[^0-9.]", ""); // Remove all non-numeric except decimal point
+        // Sanitize: keep only digits, dots, and minus sign
+        String sanitized = answer.replaceAll("[^0-9.-]", "");
 
-        // Handle multiple decimal points (keep only first)
-        int firstDot = answer.indexOf('.');
-        if (firstDot >= 0) {
-            String beforeDot = answer.substring(0, firstDot);
-            String afterDot = answer.substring(firstDot + 1).replaceAll("\\\\.", "");
-            answer = beforeDot + "." + afterDot;
+        try {
+            // Harden math parsing with BigDecimal as recommended
+            java.math.BigDecimal value = new java.math.BigDecimal(sanitized);
+            // Ensure 2 decimal places
+            value = value.setScale(2, java.math.RoundingMode.HALF_UP);
+            return value.toPlainString();
+        } catch (NumberFormatException e) {
+            log.warn("Failed to parse AI answer '{}' as number, falling back to regex cleaning", sanitized);
+            // Fallback for messy answers
+            String messyAnswer = answer.replaceAll("[^0-9.]", "");
+            if (messyAnswer.isEmpty())
+                return "0.00";
+            return messyAnswer;
         }
-
-        // Ensure 2 decimal places
-        if (!answer.contains(".")) {
-            answer = answer + ".00";
-        } else {
-            String[] parts = answer.split("\\\\.");
-            if (parts.length == 2) {
-                if (parts[1].length() == 0) {
-                    answer = parts[0] + ".00";
-                } else if (parts[1].length() == 1) {
-                    answer = parts[0] + "." + parts[1] + "0";
-                } else if (parts[1].length() > 2) {
-                    // Truncate to 2 decimal places
-                    answer = parts[0] + "." + parts[1].substring(0, 2);
-                }
-            } else {
-                answer = parts[0] + ".00";
-            }
-        }
-
-        return answer;
     }
 
     /**
