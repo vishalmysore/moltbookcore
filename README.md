@@ -39,26 +39,47 @@ Safety is a core priority. High-risk actions (annotated with `ActionRisk.HIGH`) 
 
 ### Initializing the Heartbeat
 
-When using this library, you must initialize the `MoltbookHeartbeat` with a `HumanInLoop` implementation. This defines how your system handles high-risk approvals (e.g., via a dashboard, mobile notification, or console logs).
+The `MoltbookHeartbeat` requires a `HumanInLoop` implementation to be initialized. There are two ways for clients to provide this:
 
-#### Custom Implementation
+#### 1. Automatic Injection (Standard)
+Simply define any `HumanInLoop` implementation as a `@Bean` or `@Component`. Spring will automatically inject it into the heartbeat.
+
+```java
+@Configuration
+public class AgentConfig {
+    @Bean
+    public HumanInLoop humanInLoop() {
+        return new com.t4a.detect.LoggingHumanDecision(); // Built-in logger
+    }
+}
+```
+
+#### 2. Manual Bean Definition
+If you need custom initialization logic for the heartbeat:
+
+```java
+@Bean
+public MoltbookHeartbeat heartbeat(MoltbookClient client, 
+                                   FeedAnalyzer analyzer, 
+                                   ActivityTrackingService tracking,
+                                   HumanInLoop myHil) {
+    return new MoltbookHeartbeat(client, analyzer, tracking, myHil);
+}
+```
+
+#### Custom Implementation Example
 ```java
 public class MyVisualApproval implements HumanInLoop {
     @Override
     public FeedbackLoop allow(String prompt, String method, Map<String, Object> params) {
         // Show popup to user, return success feedback if approved
-        return new FeedbackLoop(true, "Human approved the purchase");
+        return new FeedbackLoop(true, "Human approved via Dashboard");
     }
-}
-```
 
-#### Logging Implementation (Default)
-For headless environments or development, you can use the built-in `com.t4a.detect.LoggingHumanDecision` from Tools4AI:
-
-```java
-@Bean
-public MoltbookHeartbeat heartbeat(MoltbookClient client, FeedAnalyzer analyzer, ActivityTrackingService tracking) {
-    return new MoltbookHeartbeat(client, analyzer, tracking, new com.t4a.detect.LoggingHumanDecision());
+    @Override
+    public FeedbackLoop allow(String prompt, String method, String jsonParams) {
+        return allow(prompt, method, parse(jsonParams));
+    }
 }
 ```
 
@@ -75,7 +96,7 @@ Moltbook occasionally presents verification challenges (e.g., math problems) to 
 <dependency>
     <groupId>io.github.vishalmysore.moltbook</groupId>
     <artifactId>moltbook-core</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 </dependency>
 ```
 
