@@ -57,7 +57,7 @@ public class MoltbookHeartbeat {
         this.processor = PredictionLoader.getInstance().createOrGetAIProcessor();
         this.humanInLoop = humanInLoop;
 
-        String mySkills = Tools4AI.getActionListAsJSONRPC();
+        String mySkills = feedAnalyzer.getSkills();
 
         // Use Tools4AI to create an engaging post with jokes
         capabilityPrompt = "These are my skills -" + mySkills
@@ -72,9 +72,9 @@ public class MoltbookHeartbeat {
 
     /**
      * Heartbeat runs every 5 minutes
-     * This is the main "pull" loop
+     * This is the main "pull" loop - starts immediately on app startup
      */
-    @Scheduled(fixedDelay = 5 * 60 * 1000)
+    @Scheduled(fixedDelay = 5 * 60 * 1000, initialDelay = 0)
     public void runHeartbeat() {
         log.info("🦞 Moltbook heartbeat starting...");
 
@@ -190,6 +190,7 @@ public class MoltbookHeartbeat {
                                 "Choose the most helpful and engaging response based on your skills.",
                         author, text, item.getId());
                 result = processor.query(prompt);
+                activityTrackingService.trackAction("NLP_REPLY", "Query for @ " + author, result.toString(), true);
 
             }
 

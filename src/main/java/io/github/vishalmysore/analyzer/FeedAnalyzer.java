@@ -21,10 +21,20 @@ public class FeedAnalyzer {
     private final Gson gson = new Gson();
     private final com.t4a.processor.AIProcessor processor;
     private final java.util.List<String> relevantKeywords;
+    private final String skills;
 
     public FeedAnalyzer() {
         this.processor = com.t4a.predict.PredictionLoader.getInstance().createOrGetAIProcessor();
+        this.skills = com.t4a.predict.Tools4AI.getActionListAsJSONRPC();
         this.relevantKeywords = extractKeywordsFromSkills();
+    }
+
+    public List<String> getRelevantKeywords() {
+        return relevantKeywords;
+    }
+
+    public String getSkills() {
+        return skills;
     }
 
     /**
@@ -65,10 +75,9 @@ public class FeedAnalyzer {
     private java.util.List<String> extractKeywordsFromSkills() {
         java.util.List<String> keywords = new java.util.ArrayList<>();
         try {
-            String mySkills = com.t4a.predict.Tools4AI.getActionListAsJSONRPC();
             String prompt = "Extract 5-10 single-word broad topics/keywords from these agent skills. " +
                     "Return ONLY a comma-separated list of lowercase words (e.g. 'java, coding, ai').\n\nSkills:\n"
-                    + mySkills;
+                    + skills;
 
             String response = processor.query(prompt).trim();
             // Clean response

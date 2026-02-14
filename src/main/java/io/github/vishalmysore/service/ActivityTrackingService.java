@@ -61,11 +61,11 @@ public class ActivityTrackingService {
         addActivity(activity);
     }
 
-    public void trackLog(String errorMessage) {
+    public void trackLog(String message) {
         Activity activity = new Activity();
         activity.type = "INFO";
-        activity.title = "Error occurred";
-        activity.content = errorMessage;
+        activity.title = "System Log";
+        activity.content = message;
         activity.timestamp = LocalDateTime.now();
         addActivity(activity);
     }
