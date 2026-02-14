@@ -61,6 +61,25 @@ public class ActivityTrackingService {
         addActivity(activity);
     }
 
+    public void trackLog(String errorMessage) {
+        Activity activity = new Activity();
+        activity.type = "INFO";
+        activity.title = "Error occurred";
+        activity.content = errorMessage;
+        activity.timestamp = LocalDateTime.now();
+        addActivity(activity);
+    }
+
+    public void trackAction(String actionName, String details, String response, boolean success) {
+        Activity activity = new Activity();
+        activity.type = "ACTION";
+        activity.title = actionName;
+        activity.content = details + "\nResponse: " + response;
+        activity.status = success ? "SUCCESS" : "FAILED";
+        activity.timestamp = LocalDateTime.now();
+        addActivity(activity);
+    }
+
     private void addActivity(Activity activity) {
         activities.addFirst(activity);
         if (activities.size() > MAX_ACTIVITIES) {

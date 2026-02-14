@@ -72,14 +72,4 @@ public class FeedItem {
         return text.toString();
     }
 
-    /**
-     * Check if this item is about cars
-     */
-    public boolean isCarRelated() {
-        String text = getFullText().toLowerCase();
-        return text.contains("car") || text.contains("vehicle") ||
-                text.contains("auto") || text.contains("tesla") ||
-                text.contains("bmw") || text.contains("toyota") ||
-                text.contains("honda") || text.contains("ford");
-    }
 }

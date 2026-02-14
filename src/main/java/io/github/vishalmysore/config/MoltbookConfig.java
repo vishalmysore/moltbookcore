@@ -24,8 +24,8 @@ public class MoltbookConfig {
 
     @Data
     public static class Agent {
-        private String name = "CarServiceBot";
-        private String description = "A helpful AI agent for car services";
+        private String name = "MoltbookAgent";
+        private String description = "A helpful AI agent for Moltbook";
     }
 
     @Data

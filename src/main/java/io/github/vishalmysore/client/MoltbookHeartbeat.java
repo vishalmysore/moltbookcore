@@ -1,5 +1,6 @@
 package io.github.vishalmysore.client;
 
+import com.t4a.detect.HumanInLoop;
 import com.t4a.predict.PredictionLoader;
 import com.t4a.predict.Tools4AI;
 import com.t4a.processor.AIProcessor;
@@ -13,6 +14,8 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.client.HttpClientErrorException;
 
 /**
@@ -42,20 +45,22 @@ public class MoltbookHeartbeat {
     private int commentCooldownSeconds = 20;
 
     private AIProcessor processor;
-    private final String prompt;
+    private final String capabilityPrompt;
+    private HumanInLoop humanInLoop;
 
     public MoltbookHeartbeat(MoltbookClient moltbookClient,
             FeedAnalyzer feedAnalyzer,
-            ActivityTrackingService activityTrackingService) {
+            ActivityTrackingService activityTrackingService, HumanInLoop humanInLoop) {
         this.moltbookClient = moltbookClient;
         this.feedAnalyzer = feedAnalyzer;
         this.activityTrackingService = activityTrackingService;
         this.processor = PredictionLoader.getInstance().createOrGetAIProcessor();
+        this.humanInLoop = humanInLoop;
 
         String mySkills = Tools4AI.getActionListAsJSONRPC();
 
         // Use Tools4AI to create an engaging post with jokes
-        prompt = "These are my skills -" + mySkills
+        capabilityPrompt = "These are my skills -" + mySkills
                 + "- Create a fun and engaging Moltbook post (max 500 chars) that:\n" +
                 "1. Makes a witty joke about on topics derived from my skills or AI agents helping with my skills\n" +
                 "2. Introduces my skill related capabilities: \n" +
@@ -146,128 +151,58 @@ public class MoltbookHeartbeat {
     private void processRelevantItem(FeedItem item) {
         try {
             String text = item.getFullText();
-            log.info("Processing: {}", text.substring(0, Math.min(100, text.length())));
+            String author = item.getAuthor().getName();
+            log.info("Processing relevant item from @{}: {}", author, text.substring(0, Math.min(100, text.length())));
 
-            // Analyze engagement strategy
-            FeedAnalyzer.EngagementAction action = feedAnalyzer.analyzeForEngagement(item);
-            log.info("Engagement strategy: {}", action);
+            // Build a descriptive prompt for the AI to understand the context and decide
+            // the action
+            String prompt = String.format(
+                    "You are an autonomous agent on Moltbook.\n" +
+                            "Found a relevant post from @%s:\n\"%s\"\n\n" +
+                            "Task: Decide how to engage with this post and execute the appropriate action. " +
+                            "if you cannot find any action mapped then do not gie any random action " +
+                            "Choose the most helpful and engaging action based on your skills.",
+                    author, text, item.getId());
+            Object result = null;
+            try {
+                log.info("🤖 AI is deciding action for post: {}", item.getId());
+                result = processor.processSingleAction(prompt, humanInLoop);
 
-            switch (action) {
-                case UPVOTE_ONLY:
-                    log.info("👍 Upvoting post {}", item.getId());
-                    executeWithVerification(() -> {
-                        moltbookClient.upvote(item.getId());
-                        return "upvoted";
-                    }, "Upvote " + item.getId());
-                    break;
+                if (result != null) {
+                    log.info("✅ Action executed: {}", result);
+                    activityTrackingService.trackAction("NLP_ACTION", "Post ID: " + item.getId(), result.toString(),
+                            true);
+                } else {
+                    log.info("👀 AI decided no action was necessary for post: {}", item.getId());
+                    activityTrackingService.trackObservation(item.getId(), author + ": " + item.getTitle());
+                }
 
-                case COMMENT_WITH_INFO:
-                case COMMENT_WITH_COMPARISON:
-                case COMMENT_WITH_RECOMMENDATION:
-                    // Check comment cooldown
-                    if (!canComment()) {
-                        log.info("⏰ Comment cooldown active - skipping comment on post {}", item.getId());
-                        break;
-                    }
+            } catch (Exception e) {
+                // Check if this is a high-risk action block
+                log.warn("Failed to process action via NLP", e);
+                activityTrackingService
+                        .trackLog("No Matching action found just returning normal answer" + item.getId() + ": "
+                                + e.getMessage());
+                prompt = String.format(
+                        "You are an autonomous agent on Moltbook.\n" +
+                                "Found a relevant post from @%s:\n\"%s\"\n\n" +
+                                "Task: Decide how to engage with this post and return funny and engaging response. " +
+                                "Choose the most helpful and engaging response based on your skills.",
+                        author, text, item.getId());
+                result = processor.query(prompt);
 
-                    // Use Tools4AI to generate intelligent response
-                    String prompt = buildPrompt(item, action);
-                    String response = processor.query(prompt);
-
-                    log.info("💬 Commenting on post {}: {}",
-                            item.getId(),
-                            response.substring(0, Math.min(100, response.length())));
-
-                    try {
-                        String commentResponse = executeWithVerification(
-                                () -> moltbookClient.createComment(item.getId(), response),
-                                "Comment on " + item.getId());
-
-                        lastCommentTime = Instant.now();
-                        moltbookClient.upvote(item.getId()); // Also upvote
-
-                        // Track successful comment with green light
-                        activityTrackingService.trackComment(
-                                item.getId(),
-                                item.getTitle() != null ? item.getTitle() : "Post by " + item.getAuthor().getName(),
-                                response,
-                                true // SUCCESS status
-                        );
-                    } catch (RuntimeException e) {
-                        if (e.getMessage().contains("429") || e.getMessage().contains("Too Many Requests")) {
-                            log.warn("⏰ Hit rate limit for comments: {}", e.getMessage());
-                            updateCooldownFromError(e.getMessage(), false);
-
-                            // Track failed comment with red light
-                            activityTrackingService.trackComment(
-                                    item.getId(),
-                                    item.getTitle() != null ? item.getTitle() : "Post by " + item.getAuthor().getName(),
-                                    response,
-                                    false // FAILED status
-                            );
-                            activityTrackingService.trackError("Rate limit hit for comment on post " + item.getId());
-                        } else {
-                            // Track failed comment with red light
-                            activityTrackingService.trackComment(
-                                    item.getId(),
-                                    item.getTitle() != null ? item.getTitle() : "Post by " + item.getAuthor().getName(),
-                                    response,
-                                    false // FAILED status
-                            );
-                            activityTrackingService
-                                    .trackError("Failed to comment on post " + item.getId() + ": " + e.getMessage());
-                            throw e;
-                        }
-                    }
-                    break;
-
-                case OBSERVE_ONLY:
-                    log.info("👀 Observing post {} (no action)", item.getId());
-                    activityTrackingService.trackObservation(
-                            item.getId(),
-                            item.getTitle() != null ? item.getTitle() : "Post by " + item.getAuthor().getName());
-                    break;
             }
 
             // Rate limit protection
-            Thread.sleep(2000); // 2 seconds between actions
+            Thread.sleep(2000);
 
         } catch (Exception e) {
             log.error("Failed to process item: {}", item.getId(), e);
-            activityTrackingService.trackError("Exception processing post " + item.getId() + ": " + e.getMessage());
         }
     }
 
     /**
-     * Build a prompt for Tools4AI based on engagement strategy
-     */
-    private String buildPrompt(FeedItem item, FeedAnalyzer.EngagementAction action) {
-        String text = item.getFullText();
-        String author = item.getAuthor().getName();
-
-        switch (action) {
-            case COMMENT_WITH_INFO:
-                return String.format(
-                        "@%s asked: \"%s\"\n\nProvide helpful information using your knowledge and available capabilities.",
-                        author, text);
-
-            case COMMENT_WITH_COMPARISON:
-                return String.format(
-                        "@%s is discussing: \"%s\"\n\nProvide a comparison or analysis if relevant to your capabilities.",
-                        author, text);
-
-            case COMMENT_WITH_RECOMMENDATION:
-                return String.format(
-                        "@%s needs advice: \"%s\"\n\nProvide a recommendation based on your capabilities.",
-                        author, text);
-
-            default:
-                return text; // Fallback
-        }
-    }
-
-    /**
-     * Post about capabilities with robust verification handling
+     * Post about capabilities using NLP action discovery
      */
     private void postAboutCapabilities() {
         try {
@@ -278,60 +213,20 @@ public class MoltbookHeartbeat {
                 return;
             }
 
-            log.info(" No interesting discussions found - posting about our capabilities...");
-
-            String rawPostContent = processor.query(prompt);
-
-            // Clean up the response if it has quotes or extra formatting
-            rawPostContent = rawPostContent.trim();
-            if (rawPostContent.startsWith("\"") && rawPostContent.endsWith("\"")) {
-                rawPostContent = rawPostContent.substring(1, rawPostContent.length() - 1);
-            }
-
-            final String postContent = rawPostContent;
-
-            log.info("📝 Posting to Moltbook: {}", postContent.substring(0, Math.min(100, postContent.length())));
+            log.info("💡 No interesting discussions found - asking AI to post about our capabilities...");
 
             try {
-                // Post to general submolt using robust customized execution
-                String response = executeWithVerification(
-                        () -> moltbookClient.createPost("general", "🤖 Your AI Assistant is Here!", postContent),
-                        "Post capabilities");
+                Object result = processor.processSingleAction(capabilityPrompt);
 
-                lastPostTime = Instant.now();
-                log.info("✅ Posted about capabilities successfully. Response: {}", response);
-
-                // Track successful post with green light
-                activityTrackingService.trackPost(
-                        response != null && response.contains("id") ? "new-post" : "pending",
-                        "🤖 Your AI Assistant is Here!",
-                        postContent,
-                        true // SUCCESS status
-                );
-            } catch (RuntimeException e) {
-                if (e.getMessage().contains("429") || e.getMessage().contains("Too Many Requests")) {
-                    log.warn("⏰ Hit rate limit for posts: {}", e.getMessage());
-                    updateCooldownFromError(e.getMessage(), true);
-
-                    // Track failed post with red light
-                    activityTrackingService.trackPost(
-                            "rate-limited",
-                            "🤖 Your AI Assistant is Here!",
-                            postContent,
-                            false // FAILED status
-                    );
-                    activityTrackingService.trackError("Rate limit hit when posting about capabilities");
-                } else {
-                    // Track failed post with red light
-                    activityTrackingService.trackPost(
-                            "error",
-                            "🤖 Your AI Assistant is Here!",
-                            postContent,
-                            false // FAILED status
-                    );
-                    activityTrackingService.trackError("Failed to post about capabilities: " + e.getMessage());
-                    throw e;
+                if (result != null) {
+                    lastPostTime = Instant.now();
+                    log.info("✅ Posted about capabilities successfully. Result: {}", result);
+                    activityTrackingService.trackAction("CAPABILITY_POST", "Automated Capability Promotion",
+                            result.toString(), true);
                 }
+            } catch (Exception e) {
+                log.error("Failed to post about capabilities via NLP", e);
+                activityTrackingService.trackError("Capability post failed: " + e.getMessage());
             }
 
             // Wait a bit to respect rate limits
@@ -339,7 +234,7 @@ public class MoltbookHeartbeat {
 
         } catch (Exception e) {
             log.error("Failed to post about capabilities", e);
-            activityTrackingService.trackError("Exception posting about capabilities: " + e.getMessage());
+            activityTrackingService.trackError("Exception in postAboutCapabilities: " + e.getMessage());
         }
     }
 
@@ -501,16 +396,19 @@ public class MoltbookHeartbeat {
                     String verifyResponse = moltbookClient.verifyPost(verificationCode, answer);
                     log.info("✅ Verified post {}: {}", postId, verifyResponse);
 
-                    // Track successful verification
-                    activityTrackingService.trackPost(
-                            postId,
-                            "Verified pending post",
-                            "Successfully verified post " + postId,
+                    // Track successful verification with full details
+                    activityTrackingService.trackAction(
+                            "VERIFY_CHALLENGE",
+                            "Challenge: " + challenge + "\nAnswer: " + answer,
+                            verifyResponse,
                             true);
                 } catch (Exception e) {
                     log.error("❌ Failed to verify post {}", postId, e);
-                    activityTrackingService
-                            .trackError("Failed to verify pending post " + postId + ": " + e.getMessage());
+                    activityTrackingService.trackAction(
+                            "VERIFY_FAILED",
+                            "Challenge: " + challenge + "\nAttempted Answer: " + answer,
+                            e.getMessage(),
+                            false);
                 }
 
                 // Rate limit between verifications
@@ -594,8 +492,16 @@ public class MoltbookHeartbeat {
             String verifyResponse = moltbookClient.verifyPost(verificationCode, answer);
             log.info("✅ Verification submission: {}", verifyResponse);
 
-            return verifyResponse != null
+            boolean success = verifyResponse != null
                     && (verifyResponse.contains("\"success\":true") || verifyResponse.contains("verified"));
+
+            activityTrackingService.trackAction(
+                    success ? "INLINE_VERIFY_SUCCESS" : "INLINE_VERIFY_FAILED",
+                    "Challenge: " + challenge + "\nAnswer: " + answer,
+                    verifyResponse,
+                    success);
+
+            return success;
 
         } catch (Exception e) {
             log.error("❌ Error handling verification response", e);
