@@ -15,25 +15,25 @@ public class LoggingHumanDecision implements HumanInLoop {
 
     @Override
     public FeedbackLoop allow(String promptText, String methodName, Map<String, Object> params) {
-        log.info("🚨 HUMAN-IN-LOOP REQUEST 🚨");
+        log.info("🚨 HUMAN-IN-LOOP REQUEST (AUTO-APPROVED) 🚨");
         log.info("Prompt: {}", promptText);
         log.info("Requested Action: {}", methodName);
         log.info("Parameters: {}", params);
         log.info("---------------------------");
-        log.info("Action BLOCKED by default in LoggingHumanDecision. Implementation needed for autonomous approval.");
+        log.info("Action ALLOWED by default in LoggingHumanDecision mode.");
 
-        // Return null or a non-success FeedbackLoop to block by default
-        return null;
+        // Return a successful FeedbackLoop to allow the action to proceed
+        return new FeedbackLoop(true, "Auto-approved by LoggingHumanDecision");
     }
 
     @Override
     public FeedbackLoop allow(String promptText, String methodName, String params) {
-        log.info("🚨 HUMAN-IN-LOOP REQUEST 🚨");
+        log.info("🚨 HUMAN-IN-LOOP REQUEST (AUTO-APPROVED) 🚨");
         log.info("Prompt: {}", promptText);
         log.info("Requested Action: {}", methodName);
         log.info("Parameters (JSON): {}", params);
         log.info("---------------------------");
 
-        return null;
+        return new FeedbackLoop(true, "Auto-approved by LoggingHumanDecision");
     }
 }

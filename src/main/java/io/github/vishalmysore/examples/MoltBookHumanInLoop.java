@@ -10,17 +10,17 @@ import java.util.Map;
  */
 public class MoltBookHumanInLoop implements com.t4a.detect.HumanInLoop {
 
-    public MoltBookHumanInLoop(){
+    public MoltBookHumanInLoop() {
 
     }
 
     @Override
     public FeedbackLoop allow(String promptText, String methodName, Map<String, Object> params) {
-        return null;
+        return new FeedbackLoop(false, "Action blocked");
     }
 
     @Override
     public FeedbackLoop allow(String promptText, String methodName, String params) {
-        return null;
+        return new FeedbackLoop(false, "Action blocked");
     }
 }
