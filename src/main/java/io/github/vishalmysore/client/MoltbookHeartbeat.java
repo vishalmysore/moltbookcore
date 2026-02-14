@@ -4,6 +4,8 @@ import com.t4a.detect.HumanInLoop;
 import com.t4a.predict.PredictionLoader;
 import com.t4a.predict.Tools4AI;
 import com.t4a.processor.AIProcessor;
+import com.t4a.processor.scripts.ScriptProcessor;
+import com.t4a.transform.PromptTransformer;
 import io.github.vishalmysore.analyzer.FeedAnalyzer;
 import io.github.vishalmysore.model.FeedItem;
 import io.github.vishalmysore.service.ActivityTrackingService;
@@ -45,9 +47,10 @@ public class MoltbookHeartbeat {
     private int commentCooldownSeconds = 20;
 
     private AIProcessor processor;
+    private PromptTransformer promptTransformer;
     private final String capabilityPrompt;
     private HumanInLoop humanInLoop;
-
+    String mySkills;
     public MoltbookHeartbeat(MoltbookClient moltbookClient,
             FeedAnalyzer feedAnalyzer,
             ActivityTrackingService activityTrackingService, HumanInLoop humanInLoop) {
@@ -56,8 +59,9 @@ public class MoltbookHeartbeat {
         this.activityTrackingService = activityTrackingService;
         this.processor = PredictionLoader.getInstance().createOrGetAIProcessor();
         this.humanInLoop = humanInLoop;
+        this.promptTransformer = PredictionLoader.getInstance().createOrGetPromptTransformer();
 
-        String mySkills = feedAnalyzer.getSkills();
+         mySkills = feedAnalyzer.getSkills();
 
         // Use Tools4AI to create an engaging post with jokes
         capabilityPrompt = "These are my skills -" + mySkills
@@ -160,13 +164,29 @@ public class MoltbookHeartbeat {
                     "You are an autonomous agent on Moltbook.\n" +
                             "Found a relevant post from @%s:\n\"%s\"\n\n" +
                             "Task: Decide how to engage with this post and execute the appropriate action. " +
-                            "if you cannot find any action mapped then do not gie any random action " +
+                            "if you cannot find any action mapped then do not give any random action " +
                             "Choose the most helpful and engaging action based on your skills.",
                     author, text, item.getId());
             Object result = null;
+            String promptAskIfActionCanBeExecuted = String.format(
+                    "You are an autonomous agent on Moltbook.\n" +
+                            "Found a relevant post from @%s:\n\"%s\"\n\n" +
+                            "Task: Can you execute an action to engage with this post based on your skills? " +
+                            "Answer YES or NO and if YES, specify the action name " +
+                            "if you cannot find any action mapped then just answer NO."+mySkills,
+                    author, text, item.getId());
+            YesOrNoDecision yesOrNoDecision= (YesOrNoDecision) promptTransformer.transformIntoPojo(promptAskIfActionCanBeExecuted,YesOrNoDecision.class);
+            // Wrap with script processor for action execution
             try {
                 log.info("🤖 AI is deciding action for post: {}", item.getId());
-                result = processor.processSingleAction(prompt, humanInLoop);
+                if(yesOrNoDecision.isYes()) {
+                    result = processor.processSingleAction(prompt, humanInLoop);
+                }
+                    else{
+                        log.info("👀 AI decided not to take action on post: {}", item.getId());
+                        result = processor.query(prompt);
+                }
+
 
                 if (result != null) {
                     log.info("✅ Action executed: {}", result);
@@ -217,7 +237,8 @@ public class MoltbookHeartbeat {
             log.info("💡 No interesting discussions found - asking AI to post about our capabilities...");
 
             try {
-                Object result = processor.processSingleAction(capabilityPrompt);
+                // this will query for text , will not call any action as there is no action mentioned in the prompt and we are not using processSingleAction here
+                Object result = processor.query(capabilityPrompt);
 
                 if (result != null) {
                     lastPostTime = Instant.now();
@@ -314,7 +335,7 @@ public class MoltbookHeartbeat {
             log.info("🔍 Searching for relevant discussions based on agent capabilities...");
 
             // Get agent skills summary for search query
-            String mySkills = Tools4AI.getActionListAsJSONRPC();
+            String mySkills = PredictionLoader.getInstance().getActionNameList().toString();
             // Extract key topics from skills (simplified approach)
             String searchQuery = "discussions and questions about agent services";
 

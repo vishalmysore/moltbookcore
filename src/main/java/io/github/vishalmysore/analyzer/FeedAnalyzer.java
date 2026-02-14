@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.t4a.predict.PredictionLoader;
 import io.github.vishalmysore.model.FeedItem;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -25,7 +26,7 @@ public class FeedAnalyzer {
 
     public FeedAnalyzer() {
         this.processor = com.t4a.predict.PredictionLoader.getInstance().createOrGetAIProcessor();
-        this.skills = com.t4a.predict.Tools4AI.getActionListAsJSONRPC();
+        this.skills = PredictionLoader.getInstance().getActionNameList().toString();
         this.relevantKeywords = extractKeywordsFromSkills();
     }
 
@@ -114,7 +115,7 @@ public class FeedAnalyzer {
             }
 
             // Get agent skills dynamically
-            String mySkills = com.t4a.predict.Tools4AI.getActionListAsJSONRPC();
+            String mySkills = PredictionLoader.getInstance().getActionNameList().toString();
 
             // Build prompt for semantic matching
             String prompt = String.format(
